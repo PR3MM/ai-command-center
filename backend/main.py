@@ -1,22 +1,52 @@
+import asyncio
 import uvicorn
-from routers.sync import router
-from fastapi import FastAPI , Query
+from contextlib import asynccontextmanager
+from dotenv import load_dotenv
+from fastapi import FastAPI
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from routers.sync import router, run_sync
+import os
 
-app = FastAPI()
+load_dotenv()
+
+SYNC_INTERVAL_MINUTES = int(os.getenv("SYNC_INTERVAL_MINUTES", "15"))
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Run an immediate sync on startup, then schedule recurring syncs.
+    print(f"[Scheduler] Running initial sync on startup...")
+    await run_sync()
+
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(
+        run_sync,
+        trigger="interval",
+        minutes=SYNC_INTERVAL_MINUTES,
+        id="sync_job",
+        replace_existing=True,
+    )
+    scheduler.start()
+    print(f"[Scheduler] Polling every {SYNC_INTERVAL_MINUTES} minute(s).")
+
+    yield  # server runs here
+
+    scheduler.shutdown()
+    print("[Scheduler] Shut down.")
+
+
+app = FastAPI(lifespan=lifespan)
 
 app.include_router(router)
 
 
 @app.get("/")
 async def read_root():
-    return {"message": "Hello World"}
-@app.get("/sync")
-async def sync(
-    github_token: str = Query(..., description="The token for the GitHub API"),
-    # jira_token: str = Query(..., description="The token for the Jira API"),
-    # slack_token: str = Query(..., description="The token for the Slack API"),
-):
-    return await router.sync(github_token)
+    return {
+        "status": "ok",
+        "sync_interval_minutes": SYNC_INTERVAL_MINUTES,
+    }
 
-if __name__ == "__main__":  
+
+if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
